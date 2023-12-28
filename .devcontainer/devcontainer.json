@@ -1,0 +1,24 @@
+{
+	"name": "Codespaces Base",
+	"dockerFile": "Dockerfile",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"cschleiden.vscode-github-actions"
+			],
+			"settings": {
+				"editor.formatOnSave": true,
+				"terminal.integrated.profiles.linux": {
+					"zsh": {
+						"path": "/usr/bin/zsh"
+					}
+				},
+				"terminal.integrated.defaultProfile.linux": "zsh",
+				"files.exclude": {
+					"**/CODE_OF_CONDUCT.md": true,
+					"**/LICENSE": true
+				}
+			}
+		}
+	}
+}
