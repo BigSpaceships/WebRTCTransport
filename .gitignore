@@ -1,9 +1,17 @@
-/target
+client/target
 **/*.rs.bk
-Cargo.lock
-bin/
-pkg/
-wasm-pack.log
+client/Cargo.lock
+client/bin/
+client/pkg/
+client/wasm-pack.log
 
-www/node_modules
-www/dist
+client/www/node_modules
+client/www/dist
+
+server/Cargo.lock
+server/target
+server/bin
+
+target
+
+Cargo.lock
