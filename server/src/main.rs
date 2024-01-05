@@ -1,18 +1,28 @@
 #[macro_use]
 extern crate rocket;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use rocket::{
-    http::Method,
-    serde::{json::Json, Deserialize},
+    http::{Cookie, CookieJar, Method, SameSite},
+    serde::{json::Json, Deserialize, Serialize},
+    Rocket, State,
 };
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use tokio::task;
 use webrtc::{
     api::{media_engine::MediaEngine, APIBuilder},
     ice_transport::{ice_server::RTCIceServer, ice_candidate::RTCIceCandidate},
+    data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
     interceptor::registry::Registry,
-    peer_connection::{configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState, sdp::{session_description::RTCSessionDescription, sdp_type::RTCSdpType}}, data_channel::{RTCDataChannel, data_channel_message::DataChannelMessage}, ice::candidate,
+    peer_connection::{
+        configuration::RTCConfiguration,
+        peer_connection_state::RTCPeerConnectionState,
+        sdp::{sdp_type::RTCSdpType, session_description::RTCSessionDescription},
+        RTCPeerConnection,
+    },
 };
 
 #[get("/")]
@@ -23,19 +33,27 @@ fn index() -> &'static str {
     "Hello, world!"
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
-struct OfferDescription<'a> {
-    sdp: &'a str,
+struct OfferDescription {
+    sdp: String,
+}
+
+struct RTCConnections {
+    connections: HashMap<u32, Arc<RTCPeerConnection>>,
 }
 
 #[post("/new_offer", data = "<offer>")]
-async fn new_offer(offer: String) -> Option<String> {
+async fn new_offer(
+    offer: String,
+    open_connections_state: &State<tokio::sync::Mutex<RTCConnections>>,
+    cookies: &CookieJar<'_>,
+) -> Option<Json<OfferDescription>> {
     let mut m = MediaEngine::default();
 
     let _ = m.register_default_codecs();
 
-    let mut registry = Registry::new();
+    let registry = Registry::new();
 
     let api = APIBuilder::new()
         .with_media_engine(m)
@@ -52,14 +70,30 @@ async fn new_offer(offer: String) -> Option<String> {
 
     let pc = Arc::new(api.new_peer_connection(config).await.ok()?);
 
-    let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<()>(1);
+    // TODO: new ids
+    // TODO: use private (i think this probably means i should set up a proxy so they're coming
+    // from the same domain) 
+    let id = cookies
+        .get("id")
+        .map(|id| id.value().parse::<u32>().ok())
+        .flatten()
+        .unwrap_or_else(|| {
+            let new_id = 11;
+
+            let mut cookie = Cookie::new("id", new_id.to_string());
+            cookie.set_same_site(SameSite::Lax);
+            cookies.add(cookie);
+
+            new_id
+        });
+
+    open_connections_state.lock().await.connections.remove(&id);
 
     pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
         println!("Peer Connection State has changed: {s}");
 
         if s == RTCPeerConnectionState::Failed {
             println!("Peer Connection has gone to failed exiting");
-            let _ = done_tx.try_send(());
         }
 
         Box::pin(async {})
@@ -71,10 +105,7 @@ async fn new_offer(offer: String) -> Option<String> {
         println!("New data channel {d_label} {d_id}");
 
         Box::pin(async move {
-            let d2 = Arc::clone(&d);
-
             let d_label2 = d_label.clone();
-            let d_id2 = d_id;
 
             d.on_close(Box::new(move || {
                 println!("Data channel closed");
@@ -97,16 +128,27 @@ async fn new_offer(offer: String) -> Option<String> {
     let session_desc = RTCSessionDescription::offer(offer).ok()?;
 
     pc.set_remote_description(session_desc).await.ok()?;
-    
+
     let answer = pc.create_answer(None).await.ok()?;
-    
+
     pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+        let id2 = id.to_owned();
+
+        println!("ice candidate2");
+
         Box::pin(async move {
-            // add to state to send
+            println!("ice candidate");
         })
     }));
 
-    Some(answer.sdp)
+    let offer = OfferDescription { sdp: answer.sdp };
+    open_connections_state
+        .lock()
+        .await
+        .connections
+        .insert(id, pc);
+
+    Some(Json(offer))
 }
 
 #[launch]
@@ -124,4 +166,7 @@ fn rocket() -> _ {
     rocket::build()
         .attach(cors.to_cors().unwrap())
         .mount("/", routes![index, new_offer])
+        .manage(tokio::sync::Mutex::new(RTCConnections {
+            connections: HashMap::new(),
+        }))
 }
