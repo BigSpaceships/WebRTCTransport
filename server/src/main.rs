@@ -8,7 +8,7 @@ use std::{
 use rocket::{
     http::{Cookie, CookieJar, Method, SameSite},
     serde::{json::Json, Deserialize, Serialize},
-    Rocket, State,
+    State,
 };
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use tokio::task;

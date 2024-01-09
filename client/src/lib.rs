@@ -64,10 +64,7 @@ pub async fn start() -> Result<(), JsValue> {
 
     opts.body(Some(&(offer_sdp.into())));
 
-    let url = format!(
-        "https://symmetrical-winner-j4px56p667539j4-3000.app.github.dev/{}",
-        "new_offer"
-    );
+    let url = "/api/new_offer";
 
     let request = Request::new_with_str_and_init(&url, &opts)?;
 

@@ -1,0 +1,2 @@
+deb https://nginx.org/packages/ubuntu/ jammy nginx
+deb-src https://nginx.org/packages/ubuntu/ jammy nginx
