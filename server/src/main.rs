@@ -1,25 +1,42 @@
 use actix_web::{
-    get, post,
-    web::{self, Json},
+    middleware::Logger,
+    post,
+    web::{self, Data, Json},
     App, HttpResponse, HttpServer, Responder,
 };
-use serde::Deserialize;
+use env_logger::Env;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 use webrtc::{
-    ice_transport::ice_candidate::RTCIceCandidateInit,
-    peer_connection::{sdp::session_description::RTCSessionDescription, RTCPeerConnection},
+    api::{media_engine::MediaEngine, APIBuilder},
+    data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
+    ice_transport::{
+        ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
+        ice_server::RTCIceServer,
+    },
+    interceptor::registry::Registry,
+    peer_connection::{
+        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription, RTCPeerConnection,
+    },
 };
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize)]
 struct OfferDescription {
     sdp: String,
 }
 
+#[derive(Serialize)]
+struct OfferResponse {
+    sdp: String,
+    id: u32,
+}
+
 struct RTCConnections {
-    connections: HashMap<u32, Arc<RTCPeerConnection>>,
+    connections: Mutex<HashMap<u32, Arc<RTCPeerConnection>>>,
 }
 
 enum IceCandidateType {
@@ -34,17 +51,127 @@ struct RTCIceCandidates {
 // post new_offer
 // returns answer string
 #[post("/new_offer")]
-async fn new_offer(offer: Json<OfferDescription>) -> impl Responder {
-    println!("{:?}", offer);
-    HttpResponse::Ok()
+async fn new_offer(
+    offer: Json<OfferDescription>,
+    open_connections: Data<RTCConnections>,
+) -> Option<Json<OfferResponse>> {
+    let mut m = MediaEngine::default(); // TODO: share this
+
+    let _ = m.register_default_codecs();
+
+    let registry = Registry::new();
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+
+    let config = RTCConfiguration {
+        ice_servers: vec![RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let pc = Arc::new(api.new_peer_connection(config).await.ok()?);
+
+    let id = 11; // TODO: new id
+
+    pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+        let id2 = id.to_owned();
+
+        println!("ice candidate2");
+
+        Box::pin(async move {
+            println!("ice candidate");
+        })
+    }));
+
+    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        println!("Peer Connection State has changed: {s}");
+
+        if s == RTCPeerConnectionState::Failed {
+            println!("Peer Connection has gone to failed exiting");
+        }
+
+        Box::pin(async {})
+    }));
+
+    pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
+        let d_label = d.label().to_owned();
+        let d_id = d.id();
+        println!("New data channel {d_label} {d_id}");
+
+        Box::pin(async move {
+            let d_label2 = d_label.clone();
+
+            d.on_close(Box::new(move || {
+                println!("Data channel closed");
+                Box::pin(async {})
+            }));
+
+            d.on_open(Box::new(move || {
+                println!("Data channel {d_label} {d_id} opened");
+                Box::pin(async {})
+            }));
+
+            d.on_message(Box::new(move |msg: DataChannelMessage| {
+                let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
+                println!("Message from data channel '{d_label2}': '{msg_str}'");
+                Box::pin(async {})
+            }));
+        })
+    }));
+
+    let session_desc = RTCSessionDescription::offer(offer.sdp.clone()).ok()?;
+
+    pc.set_remote_description(session_desc).await.ok()?;
+
+    let answer = pc.create_answer(None).await.ok()?;
+
+    let offer = OfferResponse {
+        sdp: answer.sdp,
+        id,
+    };
+
+    open_connections.connections.lock().unwrap().insert(id, pc);
+
+    Some(Json(offer))
+}
+
+#[derive(Deserialize)]
+struct Info {
+    username: String,
+}
+
+async fn index(info: web::Json<Info>) -> impl Responder {
+    format!("Welcome {}!", info.username)
 }
 
 // post ice_candidate
+#[post("/ice_candidate")]
+async fn ice_candidate(candidate: Json<RTCIceCandidateInit>) -> impl Responder {
+    println!("{:?}", candidate);
+    HttpResponse::Ok()
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| App::new().service(new_offer))
-        .bind(("127.0.0.1", 3000))? //TODO: i think i can make a proxy better with this
-        .run()
-        .await
+    env_logger::init_from_env(Env::default().default_filter_or("debug"));
+
+    let connections = Data::new(RTCConnections {
+        connections: Mutex::new(HashMap::new())
+    });
+
+    HttpServer::new(move || {
+        App::new()
+            .wrap(Logger::default())
+            .app_data(connections.clone())
+            .service(new_offer)
+            .service(ice_candidate)
+    })
+    .bind(("127.0.0.1", 3000))? //TODO: i think i can make a proxy better with this
+    .run()
+    .await
 }
