@@ -140,15 +140,6 @@ async fn new_offer(
     Some(Json(offer))
 }
 
-#[derive(Deserialize)]
-struct Info {
-    username: String,
-}
-
-async fn index(info: web::Json<Info>) -> impl Responder {
-    format!("Welcome {}!", info.username)
-}
-
 // post ice_candidate
 #[post("/ice_candidate")]
 async fn ice_candidate(candidate: Json<RTCIceCandidateInit>) -> impl Responder {
