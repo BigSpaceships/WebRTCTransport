@@ -30,6 +30,13 @@ extern "C" {
     fn alert(s: &str);
 }
 
+#[derive(Serialize, Deserialize)]
+struct IceCandidateInit<'a> {
+    candidate: &'a str,
+    sdp_mid: &'a str,
+    sdp_mline_index: &'a str,
+}
+
 #[wasm_bindgen]
 pub async fn start() -> Result<(), JsValue> {
     let pc = RtcPeerConnection::new()?;
@@ -58,6 +65,48 @@ pub async fn start() -> Result<(), JsValue> {
     let sld_promise = pc.set_local_description(&offer_obj);
     JsFuture::from(sld_promise).await?;
     // console_log!("pc: state {:?}", pc.signaling_state());
+
+    let on_ice_candidate_candidate_callback =
+        Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
+            if let Some(candidate) = ev.candidate() {
+                let mut opts = RequestInit::new();
+                opts.method("POST");
+
+                let candidate_str = candidate.candidate();
+                let sdp_mid = candidate.sdp_mid().unwrap_or(String::from(""));
+                let sdp_mline_index = candidate.sdp_m_line_index().unwrap_or(0).to_string();
+
+                let candidate_obj = IceCandidateInit {
+                    candidate: candidate_str.as_str(),
+                    sdp_mid: sdp_mid.as_str(),
+                    sdp_mline_index: sdp_mline_index.as_str(),
+                };
+
+                let a = JsValue::from_serde(&candidate_obj).unwrap();
+
+                let b = JSON::stringify(&a).ok();
+
+                opts.body(JSON::stringify(&a).ok().map(|s| s.into()).as_ref());
+
+                console_log!("{:?}", b);
+
+                //opts.body();
+
+                let url = "/api/ice_candidate";
+
+                let window = web_sys::window().unwrap();
+
+                if let Ok(request) = Request::new_with_str_and_init(&url, &opts) {
+                    let _ = window.fetch_with_request(&request);
+                }
+            }
+        });
+
+    pc.set_onicecandidate(Some(
+        on_ice_candidate_candidate_callback.as_ref().unchecked_ref(),
+    ));
+
+    on_ice_candidate_candidate_callback.forget();
 
     let mut opts = RequestInit::new();
     opts.method("POST");

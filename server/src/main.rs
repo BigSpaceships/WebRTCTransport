@@ -14,14 +14,15 @@ use rocket_cors::{AllowedOrigins, CorsOptions};
 use tokio::task;
 use webrtc::{
     api::{media_engine::MediaEngine, APIBuilder},
-    ice_transport::{ice_server::RTCIceServer, ice_candidate::RTCIceCandidate},
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
+    ice_transport::{
+        ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
+        ice_server::RTCIceServer,
+    },
     interceptor::registry::Registry,
     peer_connection::{
-        configuration::RTCConfiguration,
-        peer_connection_state::RTCPeerConnectionState,
-        sdp::{sdp_type::RTCSdpType, session_description::RTCSessionDescription},
-        RTCPeerConnection,
+        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription, RTCPeerConnection,
     },
 };
 
@@ -43,10 +44,20 @@ struct RTCConnections {
     connections: HashMap<u32, Arc<RTCPeerConnection>>,
 }
 
+enum IceCandidateType {
+    Local,
+    Remote,
+}
+
+struct RTCIceCandidates {
+    candidates: HashMap<u32, Vec<(IceCandidateType, RTCIceCandidateInit)>>,
+}
+
 #[post("/new_offer", data = "<offer>")]
 async fn new_offer(
     offer: String,
-    open_connections_state: &State<tokio::sync::Mutex<RTCConnections>>,
+    open_connections_state: &State<Mutex<RTCConnections>>,
+    ice_candidates: &State<Mutex<RTCIceCandidates>>,
     cookies: &CookieJar<'_>,
 ) -> Option<Json<OfferDescription>> {
     let mut m = MediaEngine::default();
@@ -72,9 +83,10 @@ async fn new_offer(
 
     // TODO: new ids
     // TODO: use private (i think this probably means i should set up a proxy so they're coming
-    // from the same domain) 
+    // TODO: also make the ids not stored in cookies because idk if it'll with on native
+    // from the same domain)
     let id = cookies
-        .get("id")
+        .get_private("id")
         .map(|id| id.value().parse::<u32>().ok())
         .flatten()
         .unwrap_or_else(|| {
@@ -82,12 +94,28 @@ async fn new_offer(
 
             let mut cookie = Cookie::new("id", new_id.to_string());
             cookie.set_same_site(SameSite::Lax);
-            cookies.add(cookie);
+            cookies.add_private(cookie);
 
             new_id
         });
 
-    open_connections_state.lock().await.connections.remove(&id);
+    println!("{id}");
+
+    open_connections_state
+        .lock()
+        .unwrap()
+        .connections
+        .remove(&id);
+
+    pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+        let id2 = id.to_owned();
+
+        println!("ice candidate2");
+
+        Box::pin(async move {
+            println!("ice candidate");
+        })
+    }));
 
     pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
         println!("Peer Connection State has changed: {s}");
@@ -131,24 +159,50 @@ async fn new_offer(
 
     let answer = pc.create_answer(None).await.ok()?;
 
-    pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-        let id2 = id.to_owned();
-
-        println!("ice candidate2");
-
-        Box::pin(async move {
-            println!("ice candidate");
-        })
-    }));
-
     let offer = OfferDescription { sdp: answer.sdp };
+
     open_connections_state
         .lock()
-        .await
+        .unwrap()
         .connections
         .insert(id, pc);
 
+    ice_candidates
+        .lock()
+        .unwrap()
+        .candidates
+        .insert(id, Vec::new());
+
     Some(Json(offer))
+}
+
+#[post("/ice_candidate", data = "<data>")]
+async fn ice_candidate(
+    data: Json<RTCIceCandidateInit>,
+    ice_candidates: &State<Mutex<RTCIceCandidates>>,
+    cookies: &CookieJar<'_>,
+) -> Option<()> {
+    if let Some(id) = cookies
+        .get_private("id")
+        .map(|c| c.value().parse::<u32>().ok())
+        .flatten()
+    {
+        let mut candidates = ice_candidates.lock().unwrap();
+
+        if !candidates.candidates.contains_key(&id) {
+            return None;
+        }
+
+        candidates
+            .candidates
+            .get_mut(&id)
+            .unwrap()
+            .push((IceCandidateType::Remote, data.0));
+
+        Some(())
+    } else {
+        None
+    }
 }
 
 #[launch]
@@ -163,10 +217,17 @@ fn rocket() -> _ {
         )
         .allow_credentials(true);
 
+    let active_connectoins = Mutex::new(RTCConnections {
+        connections: HashMap::new(),
+    });
+
+    let ice_candidates = Mutex::new(RTCIceCandidates {
+        candidates: HashMap::new(),
+    });
+
     rocket::build()
         .attach(cors.to_cors().unwrap())
-        .mount("/", routes![index, new_offer])
-        .manage(tokio::sync::Mutex::new(RTCConnections {
-            connections: HashMap::new(),
-        }))
+        .manage(active_connectoins)
+        .manage(ice_candidates)
+        .mount("/", routes![index, new_offer, ice_candidate])
 }
