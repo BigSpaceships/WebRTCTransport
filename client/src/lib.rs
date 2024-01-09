@@ -105,6 +105,7 @@ pub async fn start() -> Result<(), JsValue> {
 
     id = Reflect::get(&json, &"id".into())?.as_f64().unwrap() as u32;
 
+    let id2 = id.clone();
     let on_ice_candidate_candidate_callback =
         Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
             if let Some(candidate) = ev.candidate() {
@@ -119,14 +120,12 @@ pub async fn start() -> Result<(), JsValue> {
                     candidate: candidate_str.as_str(),
                     sdp_mid: sdp_mid.as_str(),
                     sdp_mline_index,
-                    id,
+                    id: id2,
                 };
 
                 let a = JsValue::from_serde(&candidate_obj).unwrap();
 
                 opts.body(JSON::stringify(&a).ok().map(|s| s.into()).as_ref());
-
-                //opts.body();
 
                 let url = "/api/ice_candidate";
 
