@@ -44,8 +44,16 @@ enum IceCandidateType {
     Remote,
 }
 
+#[derive(Deserialize)]
+struct IceCandidateCreation {
+    candidate: String,
+    sdp_mid: Option<String>,
+    sdp_mline_index: Option<u16>,
+    id: u32,
+}
+
 struct RTCIceCandidates {
-    candidates: HashMap<u32, Vec<(IceCandidateType, RTCIceCandidateInit)>>,
+    candidates: Mutex<HashMap<u32, Vec<(IceCandidateType, RTCIceCandidateInit)>>>,
 }
 
 // post new_offer
@@ -54,6 +62,7 @@ struct RTCIceCandidates {
 async fn new_offer(
     offer: Json<OfferDescription>,
     open_connections: Data<RTCConnections>,
+    candidates: Data<RTCIceCandidates>,
 ) -> Option<Json<OfferResponse>> {
     let mut m = MediaEngine::default(); // TODO: share this
 
@@ -136,14 +145,37 @@ async fn new_offer(
     };
 
     open_connections.connections.lock().unwrap().insert(id, pc);
+    candidates.candidates.lock().unwrap().insert(id, Vec::new());
 
     Some(Json(offer))
 }
 
 // post ice_candidate
 #[post("/ice_candidate")]
-async fn ice_candidate(candidate: Json<RTCIceCandidateInit>) -> impl Responder {
-    println!("{:?}", candidate);
+async fn ice_candidate(
+    data: Json<IceCandidateCreation>,
+    candidates: Data<RTCIceCandidates>,
+) -> impl Responder {
+    let candidate = RTCIceCandidateInit {
+        candidate: data.candidate.clone(),
+        sdp_mid: data.sdp_mid.clone(),
+        sdp_mline_index: data.sdp_mline_index,
+        username_fragment: None,
+    };
+
+    let id = data.id;
+
+    let mut candidates = candidates.candidates.lock().unwrap();
+
+    if !candidates.contains_key(&id) {
+        return HttpResponse::NotFound();
+    }
+
+    candidates
+        .get_mut(&id)
+        .unwrap()
+        .push((IceCandidateType::Remote, candidate));
+
     HttpResponse::Ok()
 }
 
@@ -152,13 +184,18 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("debug"));
 
     let connections = Data::new(RTCConnections {
-        connections: Mutex::new(HashMap::new())
+        connections: Mutex::new(HashMap::new()),
+    });
+
+    let candidates = Data::new(RTCIceCandidates {
+        candidates: Mutex::new(HashMap::new()),
     });
 
     HttpServer::new(move || {
         App::new()
             .wrap(Logger::default())
             .app_data(connections.clone())
+            .app_data(candidates.clone())
             .service(new_offer)
             .service(ice_candidate)
     })
