@@ -37,6 +37,11 @@ struct IceCandidateInit<'a> {
     sdp_mline_index: &'a str,
 }
 
+#[derive(Serialize, Deserialize)]
+struct OfferDescription<'a> {
+    sdp: &'a str,
+}
+
 #[wasm_bindgen]
 pub async fn start() -> Result<(), JsValue> {
     let pc = RtcPeerConnection::new()?;
@@ -84,11 +89,7 @@ pub async fn start() -> Result<(), JsValue> {
 
                 let a = JsValue::from_serde(&candidate_obj).unwrap();
 
-                let b = JSON::stringify(&a).ok();
-
                 opts.body(JSON::stringify(&a).ok().map(|s| s.into()).as_ref());
-
-                console_log!("{:?}", b);
 
                 //opts.body();
 
@@ -111,7 +112,11 @@ pub async fn start() -> Result<(), JsValue> {
     let mut opts = RequestInit::new();
     opts.method("POST");
 
-    opts.body(Some(&(offer_sdp.into())));
+    let offer_description = OfferDescription { sdp: &offer_sdp };
+
+    let offer_description_js_value = JsValue::from_serde(&offer_description).unwrap();
+
+    opts.body(JSON::stringify(&offer_description_js_value).ok().map(|s| s.into()).as_ref());
 
     let url = "/api/new_offer";
 

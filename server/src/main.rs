@@ -1,28 +1,50 @@
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{
+    get, post,
+    web::{self, Json},
+    App, HttpResponse, HttpServer, Responder,
+};
+use serde::Deserialize;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+use webrtc::{
+    ice_transport::ice_candidate::RTCIceCandidateInit,
+    peer_connection::{sdp::session_description::RTCSessionDescription, RTCPeerConnection},
+};
 
-#[get("/")]
-async fn hello() -> impl Responder {
-    HttpResponse::Ok().body("Hello world!")
+#[derive(Deserialize, Debug)]
+struct OfferDescription {
+    sdp: String,
 }
 
-#[post("/echo")]
-async fn echo(req_body: String) -> impl Responder {
-    HttpResponse::Ok().body(req_body)
+struct RTCConnections {
+    connections: HashMap<u32, Arc<RTCPeerConnection>>,
 }
 
-async fn manual_hello() -> impl Responder {
-    HttpResponse::Ok().body("Hey there!")
+enum IceCandidateType {
+    Local,
+    Remote,
 }
+
+struct RTCIceCandidates {
+    candidates: HashMap<u32, Vec<(IceCandidateType, RTCIceCandidateInit)>>,
+}
+
+// post new_offer
+// returns answer string
+#[post("/new_offer")]
+async fn new_offer(offer: Json<OfferDescription>) -> impl Responder {
+    println!("{:?}", offer);
+    HttpResponse::Ok()
+}
+
+// post ice_candidate
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| {
-        App::new()
-            .service(hello)
-            .service(echo)
-            .route("/hey", web::get().to(manual_hello))
-    })
-    .bind(("127.0.0.1", 3000))? //TODO: i think i can make a proxy better with this
-    .run()
-    .await
+    HttpServer::new(|| App::new().service(new_offer))
+        .bind(("127.0.0.1", 3000))? //TODO: i think i can make a proxy better with this
+        .run()
+        .await
 }
