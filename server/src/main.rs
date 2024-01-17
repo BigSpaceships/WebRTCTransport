@@ -18,12 +18,12 @@ use webrtc::{
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
     ice_transport::{
         ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
-        ice_server::RTCIceServer,
+        ice_server::RTCIceServer, ice_gatherer_state::RTCIceGathererState,
     },
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription, RTCPeerConnection,
+        sdp::session_description::RTCSessionDescription, RTCPeerConnection, signaling_state::RTCSignalingState,
     },
 };
 
@@ -88,6 +88,8 @@ async fn new_offer(
         ..Default::default()
     };
 
+    println!("{:?}", offer.sdp);
+
     let pc = Arc::new(api.new_peer_connection(config).await.ok()?);
 
     let _ = session.remove("id");
@@ -95,13 +97,20 @@ async fn new_offer(
     let id = 11; // TODO: new id
 
     pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-        let id2 = id.to_owned();
-
         println!("ice candidate2");
 
-        Box::pin(async move {
-            println!("ice candidate");
-        })
+        Box::pin(async move {})
+    }));
+
+    pc.on_signaling_state_change(Box::new(move |s: RTCSignalingState| {
+        println!("Signaling State has changed: {s}");
+        Box::pin(async {})
+    }));
+
+    pc.on_ice_gathering_state_change(Box::new(move |s: RTCIceGathererState| {
+        println!("Ice Gathering State has changed: {s}");
+        
+        Box::pin(async {})
     }));
 
     pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
@@ -192,7 +201,7 @@ async fn main() {
     let (tx, mut rx) = mpsc::channel::<ConnectionMessage>(32);
 
     let server = tokio::spawn(async move {
-        env_logger::init_from_env(Env::default().default_filter_or("debug"));
+        env_logger::init_from_env(Env::default().default_filter_or("info"));
 
         let channel = Data::new(tx);
 

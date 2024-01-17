@@ -1,20 +1,20 @@
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::{
     Object, Reflect,
-    JSON::{self, stringify},
+    JSON::{self, stringify}, Array,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{convert::FromWasmAbi, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     MessageEvent, Request, RequestInit, RequestMode, Response, RtcDataChannelEvent,
-    RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit,
+    RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, RtcConfiguration, RtcIceServer,
 };
 
 macro_rules! console_log {
     //($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
 
-    ($($t:tt)*) => (alert(&format_args!($($t)*).to_string()))
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
 }
 macro_rules! console_warn {
     ($($t:tt)*) => (warn(&format_args!($($t)*).to_string()))
@@ -44,11 +44,17 @@ struct OfferDescription<'a> {
 
 #[wasm_bindgen]
 pub async fn start() -> Result<(), JsValue> {
-    let pc = RtcPeerConnection::new()?;
-    // console_log!("pc created: state {:?}", pc.signaling_state());
+    let mut config = RtcConfiguration::new();
 
-    let dc = pc.create_data_channel("data");
-    // console_log!("data channel created: label {:?}", dc.label());
+    let ice_servers = Array::new();
+    let ice_server_urls = Array::new();
+    ice_server_urls.push(&JsValue::from_str("stun:stun.l.google.com:19302"));
+    ice_servers.push(RtcIceServer::new().urls(&ice_server_urls));
+
+    config.ice_servers(&ice_servers);
+
+    let pc = RtcPeerConnection::new_with_configuration(&config)?;
+     console_log!("pc created: state {:?}", pc.get_configuration());
 
     let on_ice_candidate_candidate_callback =
         Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
@@ -88,10 +94,12 @@ pub async fn start() -> Result<(), JsValue> {
         });
 
     pc.set_onicecandidate(Some(
-            on_ice_candidate_candidate_callback.as_ref().unchecked_ref(),
-            ));
+        on_ice_candidate_candidate_callback.as_ref().unchecked_ref(),
+    ));
 
     on_ice_candidate_candidate_callback.forget();
+    let dc = pc.create_data_channel("data");
+    console_log!("data channel created: label {:?}", dc.label());
 
     let onmessage_callback = Closure::<dyn FnMut(_)>::new(move |ev: MessageEvent| {
         if let Some(message) = ev.data().as_string() {

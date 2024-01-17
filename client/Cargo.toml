@@ -29,12 +29,14 @@ console_error_panic_hook = { version = "0.1.7", optional = true }
 version = "0.3.22"
 features = [
   "MessageEvent",
+  "RtcConfiguration",
   "RtcPeerConnection",
   "RtcSignalingState",
   "RtcSdpType",
   "RtcSessionDescriptionInit",
   "RtcPeerConnectionIceEvent",
   "RtcIceCandidate",
+  "RtcIceServer",
   "RtcDataChannel",
   "RtcDataChannelEvent",
   "Request",
