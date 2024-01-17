@@ -135,9 +135,7 @@ async fn new_offer(
 
     let answer = pc.create_answer(None).await.ok()?;
 
-    let offer = OfferResponse {
-        sdp: answer.sdp,
-    };
+    let offer = OfferResponse { sdp: answer.sdp };
 
     session.insert("id", &id).ok()?;
 
@@ -159,20 +157,19 @@ async fn ice_candidate(
     let id = session.get::<u32>("id");
 
     if id.is_err() {
-        return HttpResponse::Unauthorized()
+        return HttpResponse::Unauthorized();
     }
-    
+
     let id = id.unwrap();
 
     if id.is_none() {
-        return HttpResponse::Unauthorized()
+        return HttpResponse::Unauthorized();
     }
 
     let id = id.unwrap();
 
     let mut candidates = candidates.candidates.lock().unwrap();
 
-    println!("waa");
     if !candidates.contains_key(&id) {
         return HttpResponse::NotFound();
     }

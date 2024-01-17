@@ -45,13 +45,11 @@ struct OfferDescription<'a> {
 #[wasm_bindgen]
 pub async fn start() -> Result<(), JsValue> {
     let pc = RtcPeerConnection::new()?;
-    let mut id: u32 = 0;
     // console_log!("pc created: state {:?}", pc.signaling_state());
 
     let dc = pc.create_data_channel("data");
     // console_log!("data channel created: label {:?}", dc.label());
 
-    let id2 = id.clone();
     let on_ice_candidate_candidate_callback =
         Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
             if let Some(candidate) = ev.candidate() {
