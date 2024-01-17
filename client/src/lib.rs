@@ -35,7 +35,6 @@ struct IceCandidateInit<'a> {
     candidate: &'a str,
     sdp_mid: &'a str,
     sdp_mline_index: u16,
-    id: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -51,6 +50,50 @@ pub async fn start() -> Result<(), JsValue> {
 
     let dc = pc.create_data_channel("data");
     // console_log!("data channel created: label {:?}", dc.label());
+
+    let id2 = id.clone();
+    let on_ice_candidate_candidate_callback =
+        Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
+            if let Some(candidate) = ev.candidate() {
+                let mut opts = RequestInit::new();
+                opts.method("POST");
+
+                let candidate_str = candidate.candidate();
+                let sdp_mid = candidate.sdp_mid().unwrap_or(String::from(""));
+                let sdp_mline_index = candidate.sdp_m_line_index().unwrap_or(0);
+
+                let candidate_obj = IceCandidateInit {
+                    candidate: candidate_str.as_str(),
+                    sdp_mid: sdp_mid.as_str(),
+                    sdp_mline_index,
+                };
+
+                let a = JsValue::from_serde(&candidate_obj).unwrap();
+
+                opts.body(JSON::stringify(&a).ok().map(|s| s.into()).as_ref());
+
+                let url = "/api/ice_candidate";
+
+                let window = web_sys::window().unwrap();
+
+                let request = Request::new_with_str_and_init(&url, &opts);
+
+                if request.is_err() {
+                    return;
+                }
+
+                let request = request.unwrap();
+
+                let _ = request.headers().set("Content-Type", "application/json");
+                let _ = window.fetch_with_request(&request);
+            }
+        });
+
+    pc.set_onicecandidate(Some(
+            on_ice_candidate_candidate_callback.as_ref().unchecked_ref(),
+            ));
+
+    on_ice_candidate_candidate_callback.forget();
 
     let onmessage_callback = Closure::<dyn FnMut(_)>::new(move |ev: MessageEvent| {
         if let Some(message) = ev.data().as_string() {
@@ -102,53 +145,6 @@ pub async fn start() -> Result<(), JsValue> {
     let json = JsFuture::from(resp.json()?).await?;
 
     let sdp = Reflect::get(&json, &"sdp".into())?.as_string().unwrap();
-
-    id = Reflect::get(&json, &"id".into())?.as_f64().unwrap() as u32;
-
-    let id2 = id.clone();
-    let on_ice_candidate_candidate_callback =
-        Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
-            if let Some(candidate) = ev.candidate() {
-                let mut opts = RequestInit::new();
-                opts.method("POST");
-
-                let candidate_str = candidate.candidate();
-                let sdp_mid = candidate.sdp_mid().unwrap_or(String::from(""));
-                let sdp_mline_index = candidate.sdp_m_line_index().unwrap_or(0);
-
-                let candidate_obj = IceCandidateInit {
-                    candidate: candidate_str.as_str(),
-                    sdp_mid: sdp_mid.as_str(),
-                    sdp_mline_index,
-                    id: id2,
-                };
-
-                let a = JsValue::from_serde(&candidate_obj).unwrap();
-
-                opts.body(JSON::stringify(&a).ok().map(|s| s.into()).as_ref());
-
-                let url = "/api/ice_candidate";
-
-                let window = web_sys::window().unwrap();
-
-                let request = Request::new_with_str_and_init(&url, &opts);
-
-                if request.is_err() {
-                    return;
-                }
-
-                let request = request.unwrap();
-
-                let _ = request.headers().set("Content-Type", "application/json");
-                let _ = window.fetch_with_request(&request);
-            }
-        });
-
-    pc.set_onicecandidate(Some(
-            on_ice_candidate_candidate_callback.as_ref().unchecked_ref(),
-            ));
-
-    on_ice_candidate_candidate_callback.forget();
 
     let mut answer = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
     answer.sdp(&sdp);

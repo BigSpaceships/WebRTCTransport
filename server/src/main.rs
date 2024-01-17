@@ -1,4 +1,6 @@
+use actix_session::{storage::CookieSessionStore, Session, SessionMiddleware};
 use actix_web::{
+    cookie::Key,
     middleware::Logger,
     post,
     web::{self, Data, Json},
@@ -32,7 +34,6 @@ struct OfferDescription {
 #[derive(Serialize)]
 struct OfferResponse {
     sdp: String,
-    id: u32,
 }
 
 struct RTCConnections {
@@ -42,14 +43,6 @@ struct RTCConnections {
 enum IceCandidateType {
     Local,
     Remote,
-}
-
-#[derive(Deserialize)]
-struct IceCandidateCreation {
-    candidate: String,
-    sdp_mid: Option<String>,
-    sdp_mline_index: Option<u16>,
-    id: u32,
 }
 
 struct RTCIceCandidates {
@@ -63,6 +56,7 @@ async fn new_offer(
     offer: Json<OfferDescription>,
     open_connections: Data<RTCConnections>,
     candidates: Data<RTCIceCandidates>,
+    session: Session,
 ) -> Option<Json<OfferResponse>> {
     let mut m = MediaEngine::default(); // TODO: share this
 
@@ -84,6 +78,8 @@ async fn new_offer(
     };
 
     let pc = Arc::new(api.new_peer_connection(config).await.ok()?);
+
+    let _ = session.remove("id");
 
     let id = 11; // TODO: new id
 
@@ -141,8 +137,9 @@ async fn new_offer(
 
     let offer = OfferResponse {
         sdp: answer.sdp,
-        id,
     };
+
+    session.insert("id", &id).ok()?;
 
     open_connections.connections.lock().unwrap().insert(id, pc);
     candidates.candidates.lock().unwrap().insert(id, Vec::new());
@@ -153,20 +150,29 @@ async fn new_offer(
 // post ice_candidate
 #[post("/ice_candidate")]
 async fn ice_candidate(
-    data: Json<IceCandidateCreation>,
+    data: Json<RTCIceCandidateInit>,
+    session: Session,
     candidates: Data<RTCIceCandidates>,
 ) -> impl Responder {
-    let candidate = RTCIceCandidateInit {
-        candidate: data.candidate.clone(),
-        sdp_mid: data.sdp_mid.clone(),
-        sdp_mline_index: data.sdp_mline_index,
-        username_fragment: None,
-    };
+    let candidate = data.0;
 
-    let id = data.id;
+    let id = session.get::<u32>("id");
+
+    if id.is_err() {
+        return HttpResponse::Unauthorized()
+    }
+    
+    let id = id.unwrap();
+
+    if id.is_none() {
+        return HttpResponse::Unauthorized()
+    }
+
+    let id = id.unwrap();
 
     let mut candidates = candidates.candidates.lock().unwrap();
 
+    println!("waa");
     if !candidates.contains_key(&id) {
         return HttpResponse::NotFound();
     }
@@ -194,6 +200,11 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .wrap(Logger::default())
+            .wrap(
+                SessionMiddleware::builder(CookieSessionStore::default(), Key::from(&[0; 64]))
+                    .cookie_secure(false)
+                    .build(),
+            )
             .app_data(connections.clone())
             .app_data(candidates.clone())
             .service(new_offer)
