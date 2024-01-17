@@ -12,6 +12,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+use tokio::sync::mpsc::{self, Sender};
 use webrtc::{
     api::{media_engine::MediaEngine, APIBuilder},
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
@@ -49,13 +50,23 @@ struct RTCIceCandidates {
     candidates: Mutex<HashMap<u32, Vec<(IceCandidateType, RTCIceCandidateInit)>>>,
 }
 
+enum ConnectionMessage {
+    NewConnection {
+        id: u32,
+        pc: Arc<RTCPeerConnection>,
+    },
+    AddRemoteCandidate {
+        id: u32,
+        candidate: RTCIceCandidateInit,
+    },
+}
+
 // post new_offer
 // returns answer string
 #[post("/new_offer")]
 async fn new_offer(
     offer: Json<OfferDescription>,
-    open_connections: Data<RTCConnections>,
-    candidates: Data<RTCIceCandidates>,
+    channel: Data<Sender<ConnectionMessage>>,
     session: Session,
 ) -> Option<Json<OfferResponse>> {
     let mut m = MediaEngine::default(); // TODO: share this
@@ -139,8 +150,7 @@ async fn new_offer(
 
     session.insert("id", &id).ok()?;
 
-    open_connections.connections.lock().unwrap().insert(id, pc);
-    candidates.candidates.lock().unwrap().insert(id, Vec::new());
+    channel.send(ConnectionMessage::NewConnection { id, pc }).await.ok()?;
 
     Some(Json(offer))
 }
@@ -150,7 +160,7 @@ async fn new_offer(
 async fn ice_candidate(
     data: Json<RTCIceCandidateInit>,
     session: Session,
-    candidates: Data<RTCIceCandidates>,
+    channel: Data<Sender<ConnectionMessage>>,
 ) -> impl Responder {
     let candidate = data.0;
 
@@ -168,46 +178,57 @@ async fn ice_candidate(
 
     let id = id.unwrap();
 
-    let mut candidates = candidates.candidates.lock().unwrap();
+    let message = channel.send(ConnectionMessage::AddRemoteCandidate { id , candidate }).await;
 
-    if !candidates.contains_key(&id) {
-        return HttpResponse::NotFound();
+    if message.is_err() {
+        return HttpResponse::InternalServerError();
     }
-
-    candidates
-        .get_mut(&id)
-        .unwrap()
-        .push((IceCandidateType::Remote, candidate));
 
     HttpResponse::Ok()
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(Env::default().default_filter_or("debug"));
+#[tokio::main]
+async fn main() {
+    let (tx, mut rx) = mpsc::channel::<ConnectionMessage>(32);
 
-    let connections = Data::new(RTCConnections {
-        connections: Mutex::new(HashMap::new()),
+    let server = tokio::spawn(async move {
+        env_logger::init_from_env(Env::default().default_filter_or("debug"));
+
+        let channel = Data::new(tx);
+
+        let _ = HttpServer::new(move || {
+            App::new()
+                .wrap(Logger::default())
+                .wrap(
+                    SessionMiddleware::builder(CookieSessionStore::default(), Key::from(&[0; 64]))
+                        .cookie_secure(false)
+                        .build(),
+                )
+                .app_data(channel.clone())
+                .service(new_offer)
+                .service(ice_candidate)
+        })
+        .bind(("127.0.0.1", 3000))
+        .unwrap() //TODO: i think i can make a proxy better with this
+        .run()
+        .await;
     });
 
-    let candidates = Data::new(RTCIceCandidates {
-        candidates: Mutex::new(HashMap::new()),
-    });
+    let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
 
-    HttpServer::new(move || {
-        App::new()
-            .wrap(Logger::default())
-            .wrap(
-                SessionMiddleware::builder(CookieSessionStore::default(), Key::from(&[0; 64]))
-                    .cookie_secure(false)
-                    .build(),
-            )
-            .app_data(connections.clone())
-            .app_data(candidates.clone())
-            .service(new_offer)
-            .service(ice_candidate)
-    })
-    .bind(("127.0.0.1", 3000))? //TODO: i think i can make a proxy better with this
-    .run()
-    .await
+    while let Some(message) = rx.recv().await {
+        match message {
+            ConnectionMessage::NewConnection { id, pc } => {
+                connections.insert(id, pc);
+            }
+            ConnectionMessage::AddRemoteCandidate { id, candidate } => {
+                if let Some(connection) = connections.get(&id) {
+                    let result = connection.add_ice_candidate(candidate).await;
+
+                    println!("{:?}", result);
+                }
+            }
+        }
+    }
+    server.await.unwrap();
 }
