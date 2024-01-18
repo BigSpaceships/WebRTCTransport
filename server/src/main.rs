@@ -12,7 +12,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::{mpsc::{self, Sender}, oneshot::{self, Receiver}};
 use webrtc::{
     api::{media_engine::MediaEngine, APIBuilder},
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
@@ -52,12 +52,13 @@ struct RTCIceCandidates {
 
 enum ConnectionMessage {
     NewConnection {
-        id: u32,
-        pc: Arc<RTCPeerConnection>,
+        offer: String,
+        resp: oneshot::Sender<Option<(String, u32)>>,
     },
     AddRemoteCandidate {
         id: u32,
         candidate: RTCIceCandidateInit,
+        resp: oneshot::Sender<()>,
     },
 }
 
@@ -69,97 +70,22 @@ async fn new_offer(
     channel: Data<Sender<ConnectionMessage>>,
     session: Session,
 ) -> Option<Json<OfferResponse>> {
-    let mut m = MediaEngine::default(); // TODO: share this
-
-    let _ = m.register_default_codecs();
-
-    let registry = Registry::new();
-
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
-
-    let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-
-    println!("{:?}", offer.sdp);
-
-    let pc = Arc::new(api.new_peer_connection(config).await.ok()?);
-
     let _ = session.remove("id");
 
-    let id = 11; // TODO: new id
+    let (resp_tx, resp_rx) = oneshot::channel();
 
-    pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-        println!("ice candidate2");
+    channel.send(ConnectionMessage::NewConnection { offer: offer.sdp.clone(), resp: resp_tx }).await;
 
-        Box::pin(async move {})
-    }));
+    let res = resp_rx.await.ok().flatten();
 
-    pc.on_signaling_state_change(Box::new(move |s: RTCSignalingState| {
-        println!("Signaling State has changed: {s}");
-        Box::pin(async {})
-    }));
+    if res.is_none() {
+        return None;
+    }
 
-    pc.on_ice_gathering_state_change(Box::new(move |s: RTCIceGathererState| {
-        println!("Ice Gathering State has changed: {s}");
-        
-        Box::pin(async {})
-    }));
-
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        println!("Peer Connection State has changed: {s}");
-
-        if s == RTCPeerConnectionState::Failed {
-            println!("Peer Connection has gone to failed exiting");
-        }
-
-        Box::pin(async {})
-    }));
-
-    pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
-        let d_label = d.label().to_owned();
-        let d_id = d.id();
-        println!("New data channel {d_label} {d_id}");
-
-        Box::pin(async move {
-            let d_label2 = d_label.clone();
-
-            d.on_close(Box::new(move || {
-                println!("Data channel closed");
-                Box::pin(async {})
-            }));
-
-            d.on_open(Box::new(move || {
-                println!("Data channel {d_label} {d_id} opened");
-                Box::pin(async {})
-            }));
-
-            d.on_message(Box::new(move |msg: DataChannelMessage| {
-                let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
-                println!("Message from data channel '{d_label2}': '{msg_str}'");
-                Box::pin(async {})
-            }));
-        })
-    }));
-
-    let session_desc = RTCSessionDescription::offer(offer.sdp.clone()).ok()?;
-
-    pc.set_remote_description(session_desc).await.ok()?;
-
-    let answer = pc.create_answer(None).await.ok()?;
-
-    let offer = OfferResponse { sdp: answer.sdp };
-
+    let (answer, id) = res.unwrap();
     session.insert("id", &id).ok()?;
 
-    channel.send(ConnectionMessage::NewConnection { id, pc }).await.ok()?;
+    let offer = OfferResponse { sdp: answer };
 
     Some(Json(offer))
 }
@@ -187,9 +113,17 @@ async fn ice_candidate(
 
     let id = id.unwrap();
 
-    let message = channel.send(ConnectionMessage::AddRemoteCandidate { id , candidate }).await;
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    let message = channel.send(ConnectionMessage::AddRemoteCandidate { id , candidate, resp: resp_tx }).await;
 
     if message.is_err() {
+        return HttpResponse::InternalServerError();
+    }
+
+    let resp = resp_rx.await;
+
+    if resp.is_err() {
         return HttpResponse::InternalServerError();
     }
 
@@ -223,18 +157,128 @@ async fn main() {
         .await;
     });
 
+    let mut m = MediaEngine::default(); // TODO: share this
+
+    let _ = m.register_default_codecs();
+
+    let registry = Registry::new();
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+
+    let config = RTCConfiguration {
+        ice_servers: vec![RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
     let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
 
     while let Some(message) = rx.recv().await {
         match message {
-            ConnectionMessage::NewConnection { id, pc } => {
+
+            ConnectionMessage::NewConnection { offer, resp } => {
+                println!("{:?}", offer);
+
+                let pc = api.new_peer_connection(config.clone()).await.ok();
+
+                if pc.is_none() {
+                    let _ = resp.send(None);
+                    continue;
+                }
+
+                let pc = Arc::new(pc.unwrap());
+
+                pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+                    println!("{:?}", candidate);
+
+                    Box::pin(async move {})
+                }));
+
+                pc.on_signaling_state_change(Box::new(move |s: RTCSignalingState| {
+                    println!("Signaling State has changed: {s}");
+                    Box::pin(async {})
+                }));
+
+                pc.on_ice_gathering_state_change(Box::new(move |s: RTCIceGathererState| {
+                    println!("Ice Gathering State has changed: {s}");
+
+                    Box::pin(async {})
+                }));
+
+                pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+                    println!("Peer Connection State has changed: {s}");
+
+                    if s == RTCPeerConnectionState::Failed {
+                        println!("Peer Connection has gone to failed exiting");
+                    }
+
+                    Box::pin(async {})
+                }));
+
+                pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
+                    let d_label = d.label().to_owned();
+                    let d_id = d.id();
+                    println!("New data channel {d_label} {d_id}");
+
+                    Box::pin(async move {
+                        let d_label2 = d_label.clone();
+
+                        d.on_close(Box::new(move || {
+                            println!("Data channel closed");
+                            Box::pin(async {})
+                        }));
+
+                        d.on_open(Box::new(move || {
+                            println!("Data channel {d_label} {d_id} opened");
+                            Box::pin(async {})
+                        }));
+
+                        d.on_message(Box::new(move |msg: DataChannelMessage| {
+                            let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
+                            println!("Message from data channel '{d_label2}': '{msg_str}'");
+                            Box::pin(async {})
+                        }));
+                    })
+                }));
+
+                let session_desc = RTCSessionDescription::offer(offer.clone()).ok();
+
+                if session_desc.is_none() {
+                    resp.send(None);
+                    continue;
+                }
+
+                let session_desc = session_desc.unwrap();
+
+                let _ = pc.set_remote_description(session_desc).await.ok();
+
+                let answer = pc.create_answer(None).await.ok();
+
+                if answer.is_none() {
+                    resp.send(None);
+                    continue;
+                }
+
+                let answer = answer.unwrap();
+
+                let id = 11; // TODO: new id
+
                 connections.insert(id, pc);
+
+                resp.send(Some((answer.sdp, id)));
             }
-            ConnectionMessage::AddRemoteCandidate { id, candidate } => {
+            ConnectionMessage::AddRemoteCandidate { id, candidate, resp } => {
                 if let Some(connection) = connections.get(&id) {
                     let result = connection.add_ice_candidate(candidate).await;
 
                     println!("{:?}", result);
+
+                    resp.send(());
                 }
             }
         }
