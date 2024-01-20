@@ -4,7 +4,7 @@ use actix_web::{
     get,
     middleware::Logger,
     post,
-    web::{get, Data, Json},
+    web::{Data, Json},
     App, HttpResponse, HttpServer, Responder,
 };
 use env_logger::Env;
@@ -335,7 +335,6 @@ async fn main() {
                 let _ = pc.set_local_description(answer.clone()).await; // dammit
 
                 connections.insert(id, pc);
-                candidates.insert(id, Vec::new());
 
                 let _ = resp.send(Some((answer.sdp, id)));
             }

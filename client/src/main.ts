@@ -38,7 +38,7 @@ async function createConnection() {
         });
     }
 
-    pc.onconnectionstatechange = (e) => {
+    pc.onconnectionstatechange = () => {
         if (pc.connectionState == "connected") {
             clearInterval(iceCollectionId);
         }
