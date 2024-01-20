@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use tokio::sync::{oneshot, mpsc::Sender};
+use rand::Rng;
+use tokio::sync::{mpsc::Sender, oneshot};
 use webrtc::{
     api::API,
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
@@ -45,6 +46,26 @@ pub enum ConnectionMessage {
     Cleanup,
 }
 
+fn get_id() -> u32 {
+    return get_id_with_count(0);
+}
+
+fn get_id_with_count(iteration: u8) -> u32 {
+    static IDS:Vec<u32> = Vec::new();
+
+    if iteration >= 100 {
+        panic!("Deer god what happened we guessed the id too many times");
+    }
+
+    let id = rand::thread_rng().gen_range(0..=u32::MAX);
+
+    if IDS.contains(&id) {
+        return get_id_with_count(iteration + 1);
+    }
+    
+    return id;
+}
+
 pub async fn new_connection(
     api: &API,
     tx: Sender<ConnectionMessage>,
@@ -67,9 +88,9 @@ pub async fn new_connection(
         return None;
     }
 
-    let pc = Arc::new(pc.unwrap());
+    let id = get_id();
 
-    let id = 11; // TODO: new id
+    let pc = Arc::new(pc.unwrap());
 
     pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
         let tx2 = tx.clone();

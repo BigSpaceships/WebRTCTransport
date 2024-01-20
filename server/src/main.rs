@@ -10,6 +10,7 @@ use actix_web::{
     App, HttpResponse, HttpServer, Responder,
 };
 use env_logger::Env;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{
