@@ -46,7 +46,7 @@ struct OfferResponse {
     sdp: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct IceCandidates {
     candidates: Vec<RTCIceCandidateInit>,
 }
@@ -160,7 +160,7 @@ async fn get_ice_candidates(session: Session, data: Data<Sender<ConnectionMessag
 
     let id = session.get("id").ok().flatten()?;
 
-    let _ = data.send(ConnectionMessage::GetIceCandidates { id, resp: resp_tx });
+    let _ = data.send(ConnectionMessage::GetIceCandidates { id, resp: resp_tx }).await;
 
     let resp = resp_rx.await;
 
@@ -174,6 +174,7 @@ async fn main() {
     let (tx, mut rx) = mpsc::channel::<ConnectionMessage>(32);
 
     let stop_tx = tx.clone();
+
     let server = tokio::spawn(async move {
         env_logger::init_from_env(Env::default().default_filter_or("info"));
 
@@ -190,6 +191,7 @@ async fn main() {
                 .app_data(channel.clone())
                 .service(new_offer)
                 .service(ice_candidate)
+                .service(get_ice_candidates)
         })
         .bind(("127.0.0.1", 3000))
         .unwrap() //TODO: i think i can make a proxy better with this
@@ -210,7 +212,7 @@ async fn main() {
 
     let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
 
-    let mut candidates: HashMap<u32, IceCandidates> = HashMap::new();
+    let mut candidates: HashMap<u32, Vec<RTCIceCandidateInit>> = HashMap::new();
 
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
@@ -244,8 +246,6 @@ async fn main() {
                 let id = 11; // TODO: new id
                 
                 pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-                    println!("{:?}", candidate);
-
                     let tx2 = tx.clone();
 
                     Box::pin(async move {
@@ -335,6 +335,7 @@ async fn main() {
                 let _ = pc.set_local_description(answer.clone()).await; // dammit
 
                 connections.insert(id, pc);
+                candidates.insert(id, Vec::new());
 
                 let _ = resp.send(Some((answer.sdp, id)));
             }
@@ -344,9 +345,7 @@ async fn main() {
                 resp,
             } => {
                 if let Some(connection) = connections.get(&id) {
-                    let result = connection.add_ice_candidate(candidate).await;
-
-                    println!("{:?}", result);
+                    let _ = connection.add_ice_candidate(candidate).await;
 
                     let _ = resp.send(());
                 }
@@ -357,15 +356,19 @@ async fn main() {
                 resp,
             } => {
                 if !candidates.contains_key(&id) {
-                    resp.send(());
-                    continue;
+                    candidates.insert(id, Vec::new());
                 }
 
-                candidates.get_mut(&id).unwrap().candidates.push(candidate);
-                resp.send(());
+                candidates.get_mut(&id).unwrap().push(candidate);
+                let _ = resp.send(());
             }
             ConnectionMessage::GetIceCandidates { id, resp } => {
-                resp.send(candidates.remove(&id));
+                let pc_candidates = candidates.remove(&id);
+
+                println!("{:?}", pc_candidates);
+                let _ = resp.send(pc_candidates.map(|c| IceCandidates {
+                    candidates: c
+                }));
             }
             ConnectionMessage::Cleanup => {
                 for (_, value) in connections.iter() { 
@@ -376,5 +379,7 @@ async fn main() {
             }
         }
     }
+
+
     server.await.unwrap();
 }

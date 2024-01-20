@@ -5,7 +5,26 @@ async function createConnection() {
 
     let pc = new RTCPeerConnection();
 
-    pc.createDataChannel("data");
+    let fetchNumber = 0;
+
+    let iceCollectionId = setInterval(async () => {
+        fetchNumber++;
+
+        if (fetchNumber > 3) {
+            clearInterval(iceCollectionId);
+        }
+
+        let candidates_response = await fetch("/api/ice_candidate");
+
+        let candidates: Array<RTCIceCandidateInit> = (await candidates_response.json()).candidates;
+
+        candidates.forEach((candidate) => {
+            pc.addIceCandidate(candidate);
+        });
+
+    }, 1000);
+    
+    let dc = pc.createDataChannel("data");
 
     pc.onicecandidate = async (candidate) => {
         if (candidate.candidate == null) return;
@@ -18,6 +37,14 @@ async function createConnection() {
             },
         });
     }
+
+    pc.onconnectionstatechange = (e) => {
+        if (pc.connectionState == "connected") {
+            clearInterval(iceCollectionId);
+        }
+
+        console.log(`Connection state changed: ${pc.connectionState}`);
+    };
 
     let offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
