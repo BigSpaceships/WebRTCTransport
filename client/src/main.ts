@@ -16,7 +16,7 @@ async function createConnection() {
 
         let candidates_response = await fetch("/api/ice_candidate");
 
-        let candidates: Array<RTCIceCandidateInit> = (await candidates_response.json()).candidates;
+        let candidates: Array<RTCIceCandidateInit> = (await candidates_response.json());
 
         candidates.forEach((candidate) => {
             pc.addIceCandidate(candidate);
