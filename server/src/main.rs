@@ -3,27 +3,38 @@ use actix_web::{
     cookie::Key,
     middleware::Logger,
     post,
-    web::{self, Data, Json},
+    web::{Data, Json},
     App, HttpResponse, HttpServer, Responder,
 };
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use tokio::sync::{mpsc::{self, Sender}, oneshot::{self, Receiver}};
+use tokio::sync::{
+    mpsc::{self, Sender},
+    oneshot,
+};
 use webrtc::{
     api::{media_engine::MediaEngine, APIBuilder},
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
     ice_transport::{
         ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
-        ice_server::RTCIceServer, ice_gatherer_state::RTCIceGathererState,
+        ice_gatherer_state::RTCIceGathererState,
+        ice_server::RTCIceServer,
     },
     interceptor::registry::Registry,
     peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription, RTCPeerConnection, signaling_state::RTCSignalingState,
+        configuration::RTCConfiguration,
+        peer_connection_state::RTCPeerConnectionState,
+        policy::{
+            bundle_policy::RTCBundlePolicy, ice_transport_policy::RTCIceTransportPolicy,
+            rtcp_mux_policy::RTCRtcpMuxPolicy,
+        },
+        sdp::session_description::RTCSessionDescription,
+        signaling_state::RTCSignalingState,
+        RTCPeerConnection,
     },
 };
 
@@ -35,19 +46,6 @@ struct OfferDescription {
 #[derive(Serialize)]
 struct OfferResponse {
     sdp: String,
-}
-
-struct RTCConnections {
-    connections: Mutex<HashMap<u32, Arc<RTCPeerConnection>>>,
-}
-
-enum IceCandidateType {
-    Local,
-    Remote,
-}
-
-struct RTCIceCandidates {
-    candidates: Mutex<HashMap<u32, Vec<(IceCandidateType, RTCIceCandidateInit)>>>,
 }
 
 enum ConnectionMessage {
@@ -74,7 +72,12 @@ async fn new_offer(
 
     let (resp_tx, resp_rx) = oneshot::channel();
 
-    channel.send(ConnectionMessage::NewConnection { offer: offer.sdp.clone(), resp: resp_tx }).await;
+    let _ = channel // TODO: i should maybe handle this one
+        .send(ConnectionMessage::NewConnection {
+            offer: offer.sdp.clone(),
+            resp: resp_tx,
+        })
+        .await;
 
     let res = resp_rx.await.ok().flatten();
 
@@ -115,7 +118,13 @@ async fn ice_candidate(
 
     let (resp_tx, resp_rx) = oneshot::channel();
 
-    let message = channel.send(ConnectionMessage::AddRemoteCandidate { id , candidate, resp: resp_tx }).await;
+    let message = channel
+        .send(ConnectionMessage::AddRemoteCandidate {
+            id,
+            candidate,
+            resp: resp_tx,
+        })
+        .await;
 
     if message.is_err() {
         return HttpResponse::InternalServerError();
@@ -168,23 +177,23 @@ async fn main() {
         .with_interceptor_registry(registry)
         .build();
 
-    let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-
     let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
 
     while let Some(message) = rx.recv().await {
         match message {
-
             ConnectionMessage::NewConnection { offer, resp } => {
-                println!("{:?}", offer);
+                let config = RTCConfiguration {
+                    ice_servers: vec![RTCIceServer {
+                        urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                        ..Default::default()
+                    }],
+                    ice_transport_policy: RTCIceTransportPolicy::All,
+                    bundle_policy: RTCBundlePolicy::Balanced,
+                    rtcp_mux_policy: RTCRtcpMuxPolicy::Require,
+                    ..Default::default()
+                };
 
-                let pc = api.new_peer_connection(config.clone()).await.ok();
+                let pc = api.new_peer_connection(config).await.ok();
 
                 if pc.is_none() {
                     let _ = resp.send(None);
@@ -249,7 +258,7 @@ async fn main() {
                 let session_desc = RTCSessionDescription::offer(offer.clone()).ok();
 
                 if session_desc.is_none() {
-                    resp.send(None);
+                    let _ = resp.send(None);
                     continue;
                 }
 
@@ -260,25 +269,31 @@ async fn main() {
                 let answer = pc.create_answer(None).await.ok();
 
                 if answer.is_none() {
-                    resp.send(None);
+                    let _ = resp.send(None);
                     continue;
                 }
 
                 let answer = answer.unwrap();
 
+                let _ = pc.set_local_description(answer.clone()).await; // dammit
+
                 let id = 11; // TODO: new id
 
                 connections.insert(id, pc);
 
-                resp.send(Some((answer.sdp, id)));
+                let _ = resp.send(Some((answer.sdp, id)));
             }
-            ConnectionMessage::AddRemoteCandidate { id, candidate, resp } => {
+            ConnectionMessage::AddRemoteCandidate {
+                id,
+                candidate,
+                resp,
+            } => {
                 if let Some(connection) = connections.get(&id) {
                     let result = connection.add_ice_candidate(candidate).await;
 
                     println!("{:?}", result);
 
-                    resp.send(());
+                    let _ = resp.send(());
                 }
             }
         }

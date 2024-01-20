@@ -54,7 +54,7 @@ pub async fn start() -> Result<(), JsValue> {
     config.ice_servers(&ice_servers);
 
     let pc = RtcPeerConnection::new_with_configuration(&config)?;
-     console_log!("pc created: state {:?}", pc.get_configuration());
+     console_log!("{:?}", pc.get_configuration());
 
     let on_ice_candidate_candidate_callback =
         Closure::<dyn FnMut(_)>::new(move |ev: RtcPeerConnectionIceEvent| {
