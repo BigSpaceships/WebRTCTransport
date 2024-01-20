@@ -71,6 +71,7 @@ enum ConnectionMessage {
         id: u32,
         resp: oneshot::Sender<Option<IceCandidates>>,
     },
+    Cleanup,
 }
 
 // post new_offer
@@ -172,6 +173,7 @@ async fn get_ice_candidates(session: Session, data: Data<Sender<ConnectionMessag
 async fn main() {
     let (tx, mut rx) = mpsc::channel::<ConnectionMessage>(32);
 
+    let stop_tx = tx.clone();
     let server = tokio::spawn(async move {
         env_logger::init_from_env(Env::default().default_filter_or("info"));
 
@@ -209,6 +211,12 @@ async fn main() {
     let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
 
     let mut candidates: HashMap<u32, IceCandidates> = HashMap::new();
+
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+
+        let _ = stop_tx.send(ConnectionMessage::Cleanup).await;
+    });
 
     while let Some(message) = rx.recv().await {
         match message {
@@ -358,6 +366,13 @@ async fn main() {
             }
             ConnectionMessage::GetIceCandidates { id, resp } => {
                 resp.send(candidates.remove(&id));
+            }
+            ConnectionMessage::Cleanup => {
+                for (_, value) in connections.iter() { 
+                    let _ = value.close().await;
+                }
+
+                connections.clear();
             }
         }
     }
