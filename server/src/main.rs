@@ -1,17 +1,15 @@
 use actix_session::{storage::CookieSessionStore, Session, SessionMiddleware};
 use actix_web::{
     cookie::Key,
+    get,
     middleware::Logger,
     post,
-    web::{Data, Json},
+    web::{get, Data, Json},
     App, HttpResponse, HttpServer, Responder,
 };
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{
     mpsc::{self, Sender},
     oneshot,
@@ -48,15 +46,30 @@ struct OfferResponse {
     sdp: String,
 }
 
+#[derive(Serialize)]
+struct IceCandidates {
+    candidates: Vec<RTCIceCandidateInit>,
+}
+
 enum ConnectionMessage {
     NewConnection {
         offer: String,
+        tx: Sender<ConnectionMessage>,
         resp: oneshot::Sender<Option<(String, u32)>>,
     },
     AddRemoteCandidate {
         id: u32,
         candidate: RTCIceCandidateInit,
         resp: oneshot::Sender<()>,
+    },
+    AddLocalCandidate {
+        id: u32,
+        candidate: RTCIceCandidateInit,
+        resp: oneshot::Sender<()>,
+    },
+    GetIceCandidates {
+        id: u32,
+        resp: oneshot::Sender<Option<IceCandidates>>,
     },
 }
 
@@ -75,6 +88,7 @@ async fn new_offer(
     let _ = channel // TODO: i should maybe handle this one
         .send(ConnectionMessage::NewConnection {
             offer: offer.sdp.clone(),
+            tx: channel.get_ref().clone(),
             resp: resp_tx,
         })
         .await;
@@ -139,6 +153,21 @@ async fn ice_candidate(
     HttpResponse::Ok()
 }
 
+#[get("/ice_candidate")]
+async fn get_ice_candidates(session: Session, data: Data<Sender<ConnectionMessage>>) -> Option<Json<IceCandidates>> {
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    let id = session.get("id").ok().flatten()?;
+
+    let _ = data.send(ConnectionMessage::GetIceCandidates { id, resp: resp_tx });
+
+    let resp = resp_rx.await;
+
+    let candidates = resp.ok().flatten();
+
+    return candidates.map(|c| Json(c));
+}
+
 #[tokio::main]
 async fn main() {
     let (tx, mut rx) = mpsc::channel::<ConnectionMessage>(32);
@@ -166,7 +195,7 @@ async fn main() {
         .await;
     });
 
-    let mut m = MediaEngine::default(); // TODO: share this
+    let mut m = MediaEngine::default();
 
     let _ = m.register_default_codecs();
 
@@ -179,9 +208,11 @@ async fn main() {
 
     let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
 
+    let mut candidates: HashMap<u32, IceCandidates> = HashMap::new();
+
     while let Some(message) = rx.recv().await {
         match message {
-            ConnectionMessage::NewConnection { offer, resp } => {
+            ConnectionMessage::NewConnection { offer, tx, resp } => {
                 let config = RTCConfiguration {
                     ice_servers: vec![RTCIceServer {
                         urls: vec!["stun:stun.l.google.com:19302".to_owned()],
@@ -202,10 +233,28 @@ async fn main() {
 
                 let pc = Arc::new(pc.unwrap());
 
+                let id = 11; // TODO: new id
+                
                 pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
                     println!("{:?}", candidate);
 
-                    Box::pin(async move {})
+                    let tx2 = tx.clone();
+
+                    Box::pin(async move {
+                        if let Some(candidate) = candidate {
+                            if let Ok(candidate_json) = candidate.to_json() {
+                                let (resp_tx, resp_rx) = oneshot::channel();
+
+                                let _ = tx2.send(ConnectionMessage::AddLocalCandidate {
+                                    id,
+                                    candidate: candidate_json,
+                                    resp: resp_tx,
+                                }).await;
+
+                                let _ = resp_rx.await;
+                            }
+                        }
+                    })
                 }));
 
                 pc.on_signaling_state_change(Box::new(move |s: RTCSignalingState| {
@@ -277,8 +326,6 @@ async fn main() {
 
                 let _ = pc.set_local_description(answer.clone()).await; // dammit
 
-                let id = 11; // TODO: new id
-
                 connections.insert(id, pc);
 
                 let _ = resp.send(Some((answer.sdp, id)));
@@ -295,6 +342,22 @@ async fn main() {
 
                     let _ = resp.send(());
                 }
+            }
+            ConnectionMessage::AddLocalCandidate {
+                id,
+                candidate,
+                resp,
+            } => {
+                if !candidates.contains_key(&id) {
+                    resp.send(());
+                    continue;
+                }
+
+                candidates.get_mut(&id).unwrap().candidates.push(candidate);
+                resp.send(());
+            }
+            ConnectionMessage::GetIceCandidates { id, resp } => {
+                resp.send(candidates.remove(&id));
             }
         }
     }
