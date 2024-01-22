@@ -10,7 +10,6 @@ use actix_web::{
     App, HttpResponse, HttpServer, Responder,
 };
 use env_logger::Env;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{
@@ -24,7 +23,7 @@ use webrtc::{
     peer_connection::RTCPeerConnection,
 };
 
-use crate::connection_manager::ConnectionMessage;
+use crate::connection_manager::{ConnectionMessage, start_message_manager};
 
 #[derive(Deserialize, Serialize)]
 struct OfferDescription {
@@ -139,7 +138,7 @@ async fn get_ice_candidates(session: Session, data: Data<Sender<ConnectionMessag
 
 #[tokio::main]
 async fn main() {
-    let (tx, mut rx) = mpsc::channel::<ConnectionMessage>(32);
+    let (tx, rx) = mpsc::channel::<ConnectionMessage>(32);
 
     let stop_tx = tx.clone();
 
@@ -167,83 +166,14 @@ async fn main() {
         .await;
     });
 
-    let mut m = MediaEngine::default();
-
-    let _ = m.register_default_codecs();
-
-    let registry = Registry::new();
-
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
-
-    let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
-
-    let mut candidates: HashMap<u32, Vec<RTCIceCandidateInit>> = HashMap::new();
-
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
 
         let _ = stop_tx.send(ConnectionMessage::Cleanup).await;
     });
 
-    while let Some(message) = rx.recv().await {
-        match message {
-            ConnectionMessage::NewConnection { offer, tx, resp } => {
 
-                let connection = connection_manager::new_connection(&api, tx.clone(), offer).await;
-
-                if connection.is_none() {
-                    let _ = resp.send(None);
-                    continue;
-                }
-
-                let (pc, id, answer) = connection.unwrap();
-
-                connections.insert(id, pc);
-
-                let _ = resp.send(Some((answer, id)));
-            }
-            ConnectionMessage::AddRemoteCandidate {
-                id,
-                candidate,
-                resp,
-            } => {
-                if let Some(connection) = connections.get(&id) {
-                    let _ = connection.add_ice_candidate(candidate).await;
-
-                    let _ = resp.send(());
-                }
-            }
-            ConnectionMessage::AddLocalCandidate {
-                id,
-                candidate,
-                resp,
-            } => {
-                if !candidates.contains_key(&id) {
-                    candidates.insert(id, Vec::new());
-                }
-
-                candidates.get_mut(&id).unwrap().push(candidate);
-                let _ = resp.send(());
-            }
-            ConnectionMessage::GetIceCandidates { id, resp } => {
-                let pc_candidates = candidates.remove(&id);
-
-                println!("{:?}", pc_candidates);
-                let _ = resp.send(pc_candidates);
-            }
-            ConnectionMessage::Cleanup => {
-                for (_, value) in connections.iter() { 
-                    let _ = value.close().await;
-                }
-
-                connections.clear();
-            }
-        }
-    }
-
+    start_message_manager(rx).await;
 
     server.await.unwrap();
 }

@@ -67,6 +67,6 @@ async function createConnection() {
     });
 }
 
-document.getElementById("app")?.addEventListener("click", async () => {
+document.getElementById("connect")?.addEventListener("click", async () => {
     createConnection();
 });

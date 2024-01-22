@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::{sync::Arc, collections::HashMap};
 
 use rand::Rng;
-use tokio::sync::{mpsc::Sender, oneshot};
+use tokio::sync::{
+    mpsc::{Receiver, Sender},
+    oneshot,
+};
 use webrtc::{
-    api::API,
+    api::{API, media_engine::MediaEngine, APIBuilder},
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
     ice_transport::{
         ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
@@ -20,9 +23,10 @@ use webrtc::{
         sdp::session_description::RTCSessionDescription,
         signaling_state::RTCSignalingState,
         RTCPeerConnection,
-    },
+    }, interceptor::registry::Registry,
 };
 
+#[derive(Debug)]
 pub enum ConnectionMessage {
     NewConnection {
         offer: String,
@@ -51,7 +55,7 @@ fn get_id() -> u32 {
 }
 
 fn get_id_with_count(iteration: u8) -> u32 {
-    static IDS:Vec<u32> = Vec::new();
+    static IDS: Vec<u32> = Vec::new();
 
     if iteration >= 100 {
         panic!("Deer god what happened we guessed the id too many times");
@@ -62,7 +66,7 @@ fn get_id_with_count(iteration: u8) -> u32 {
     if IDS.contains(&id) {
         return get_id_with_count(iteration + 1);
     }
-    
+
     return id;
 }
 
@@ -182,4 +186,76 @@ pub async fn new_connection(
     let _ = pc.set_local_description(answer.clone()).await; // dammit
 
     return Some((pc, id, answer.sdp));
+}
+
+pub async fn start_message_manager(mut rx: Receiver<ConnectionMessage>) {
+    let mut m = MediaEngine::default();
+
+    let _ = m.register_default_codecs();
+
+    let registry = Registry::new();
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+
+    let mut connections: HashMap<u32, Arc<RTCPeerConnection>> = HashMap::new();
+
+    let mut candidates: HashMap<u32, Vec<RTCIceCandidateInit>> = HashMap::new();
+
+    while let Some(message) = rx.recv().await {
+        match message {
+            ConnectionMessage::NewConnection { offer, tx, resp } => {
+                let connection = new_connection(&api, tx.clone(), offer).await;
+
+                if connection.is_none() {
+                    let _ = resp.send(None);
+                    continue;
+                }
+
+                let (pc, id, answer) = connection.unwrap();
+
+                connections.insert(id, pc);
+
+                let _ = resp.send(Some((answer, id)));
+            }
+            ConnectionMessage::AddRemoteCandidate {
+                id,
+                candidate,
+                resp,
+            } => {
+                if let Some(connection) = connections.get(&id) {
+                    let _ = connection.add_ice_candidate(candidate).await;
+
+                    let _ = resp.send(());
+                }
+            }
+            ConnectionMessage::AddLocalCandidate {
+                id,
+                candidate,
+                resp,
+            } => {
+                if !candidates.contains_key(&id) {
+                    candidates.insert(id, Vec::new());
+                }
+
+                candidates.get_mut(&id).unwrap().push(candidate);
+                let _ = resp.send(());
+            }
+            ConnectionMessage::GetIceCandidates { id, resp } => {
+                let pc_candidates = candidates.remove(&id);
+
+                println!("{:?}", pc_candidates);
+                let _ = resp.send(pc_candidates);
+            }
+            ConnectionMessage::Cleanup => {
+                for (_, value) in connections.iter() {
+                    let _ = value.close().await;
+                }
+
+                connections.clear();
+            }
+        }
+    }
 }
