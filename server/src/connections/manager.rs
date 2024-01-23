@@ -104,13 +104,7 @@ pub async fn start_message_manager(mut rx: Receiver<ConnectionMessage>) {
                 resp,
             } => {
                 if let Some(connection) = connections.get(&id) {
-                    let result = connection.add_ice_candidate(candidate).await; //TODO: sometimes
-                                                                                //this can get
-                                                                                //called before the
-                                                                                //thread adding the
-                                                                                //pc finishes which
-                                                                                //results in this
-                                                                                //not working
+                    let result = connection.add_ice_candidate(candidate).await;
 
                     if result.is_err() {
                         println!("Error adding candidate: {:?}", result.unwrap_err());

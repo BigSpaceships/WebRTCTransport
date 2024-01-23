@@ -1,5 +1,13 @@
 import './style.css'
-
+async function sendCandidate(candidate: RTCIceCandidateInit) {
+    await fetch("/api/ice_candidate", {
+        method: "POST",
+        body: JSON.stringify(candidate),
+        headers: {
+            "Content-Type": "application/json",
+        },
+    });
+}
 async function createConnection() {
     console.log("creating connection");
 
@@ -23,19 +31,26 @@ async function createConnection() {
         });
 
     }, 1000);
-    
+
     let dc = pc.createDataChannel("data");
+
+    dc.onopen = () => {
+        dc.send("hello there");
+    }
+
+    let sentOffer = false;
+    let candidatesToAdd: RTCIceCandidateInit[] = [];
 
     pc.onicecandidate = async (candidate) => {
         if (candidate.candidate == null) return;
 
-        let response = await fetch("/api/ice_candidate", {
-            method: "POST",
-            body: JSON.stringify(candidate.candidate.toJSON()),
-            headers: {
-                "Content-Type": "application/json",
-            },
-        });
+        let candidateInit = candidate.candidate.toJSON();
+
+        if (sentOffer) {
+            await sendCandidate(candidateInit);
+        } else {
+            candidatesToAdd.push(candidateInit);
+        }
     }
 
     pc.onconnectionstatechange = () => {
@@ -64,6 +79,12 @@ async function createConnection() {
     await pc.setRemoteDescription({
         type: "answer",
         sdp: json.sdp,
+    });
+
+    sentOffer = true;
+
+    candidatesToAdd.forEach(async (candidate) => {
+        await sendCandidate(candidate);
     });
 }
 
