@@ -1,4 +1,4 @@
-mod connection_manager;
+mod connections;
 
 use actix_session::{storage::CookieSessionStore, Session, SessionMiddleware};
 use actix_web::{
@@ -11,19 +11,13 @@ use actix_web::{
 };
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{
     mpsc::{self, Sender},
     oneshot,
 };
-use webrtc::{
-    api::{media_engine::MediaEngine, APIBuilder},
-    ice_transport::ice_candidate::RTCIceCandidateInit,
-    interceptor::registry::Registry,
-    peer_connection::RTCPeerConnection,
-};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
-use crate::connection_manager::{ConnectionMessage, start_message_manager};
+use crate::connections::manager::{ConnectionMessage, start_message_manager};
 
 #[derive(Deserialize, Serialize)]
 struct OfferDescription {
@@ -86,6 +80,7 @@ async fn ice_candidate(
 
     let id = session.get::<u32>("id");
 
+    println!("{id:?}");
     if id.is_err() {
         return HttpResponse::Unauthorized();
     }
@@ -98,6 +93,7 @@ async fn ice_candidate(
 
     let id = id.unwrap();
 
+
     let (resp_tx, resp_rx) = oneshot::channel();
 
     let message = channel
@@ -109,12 +105,14 @@ async fn ice_candidate(
         .await;
 
     if message.is_err() {
+        println!("Error adding remote candidate: {:?}", message.unwrap_err());
         return HttpResponse::InternalServerError();
     }
 
     let resp = resp_rx.await;
 
     if resp.is_err() {
+        println!("Error adding remote candidate reciever: {:?}", resp.unwrap_err());
         return HttpResponse::InternalServerError();
     }
 
@@ -171,7 +169,6 @@ async fn main() {
 
         let _ = stop_tx.send(ConnectionMessage::Cleanup).await;
     });
-
 
     start_message_manager(rx).await;
 
