@@ -17,7 +17,7 @@ use tokio::sync::{
 };
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
-use crate::connections::manager::{ConnectionMessage, start_message_manager};
+use crate::connections::manager::{start_message_manager, ConnectionMessage};
 
 #[derive(Deserialize, Serialize)]
 struct OfferDescription {
@@ -27,13 +27,13 @@ struct OfferDescription {
 #[derive(Serialize)]
 struct OfferResponse {
     sdp: String,
+    id: u32,
 }
 
 #[derive(Serialize, Debug)]
 struct IceCandidates {
     candidates: Vec<RTCIceCandidateInit>,
 }
-
 
 // post new_offer
 // returns answer string
@@ -64,7 +64,7 @@ async fn new_offer(
     let (answer, id) = res.unwrap();
     session.insert("id", &id).ok()?;
 
-    let offer = OfferResponse { sdp: answer };
+    let offer = OfferResponse { sdp: answer, id };
 
     Some(Json(offer))
 }
@@ -93,7 +93,6 @@ async fn ice_candidate(
 
     let id = id.unwrap();
 
-
     let (resp_tx, resp_rx) = oneshot::channel();
 
     let message = channel
@@ -112,7 +111,10 @@ async fn ice_candidate(
     let resp = resp_rx.await;
 
     if resp.is_err() {
-        println!("Error adding remote candidate reciever: {:?}", resp.unwrap_err());
+        println!(
+            "Error adding remote candidate reciever: {:?}",
+            resp.unwrap_err()
+        );
         return HttpResponse::InternalServerError();
     }
 
@@ -120,12 +122,17 @@ async fn ice_candidate(
 }
 
 #[get("/ice_candidate")]
-async fn get_ice_candidates(session: Session, data: Data<Sender<ConnectionMessage>>) -> Option<Json<Vec<RTCIceCandidateInit>>> {
+async fn get_ice_candidates(
+    session: Session,
+    data: Data<Sender<ConnectionMessage>>,
+) -> Option<Json<Vec<RTCIceCandidateInit>>> {
     let (resp_tx, resp_rx) = oneshot::channel();
 
     let id = session.get("id").ok().flatten()?;
 
-    let _ = data.send(ConnectionMessage::GetIceCandidates { id, resp: resp_tx }).await;
+    let _ = data
+        .send(ConnectionMessage::GetIceCandidates { id, resp: resp_tx })
+        .await;
 
     let resp = resp_rx.await;
 
