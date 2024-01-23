@@ -8,6 +8,7 @@ async function sendCandidate(candidate: RTCIceCandidateInit) {
         },
     });
 }
+
 async function createConnection() {
     console.log("creating connection");
 
