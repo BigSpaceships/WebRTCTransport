@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 
 use tokio::sync::{
-    mpsc::Sender,
+    mpsc::{Sender, self},
     oneshot,
 };
 use webrtc::{
@@ -103,22 +103,36 @@ impl Connection {
             })
         }));
 
-        pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
+
+        Ok(Connection { pc, tx, id })
+    }
+
+    pub async fn connect(&self, offer: String) -> Option<String> {
+        let (data_tx, mut data_rx) = mpsc::channel::<String>(1);
+
+        self.pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
             let d_label = d.label().to_owned();
             let d_id = d.id();
             println!("New data channel {d_label} {d_id}");
 
+            let data_tx = data_tx.clone();
+
             Box::pin(async move {
+                let d2 = Arc::clone(&d);
                 let d_label2 = d_label.clone();
 
                 d.on_open(Box::new(move || {
                     println!("Data channel {d_label} {d_id} opened");
 
-                    Box::pin(async {})
+                    Box::pin(async move {
+                        let _ = data_tx.send("HII".to_string()).await;
+                        let _ = d2.send_text("WAAA").await;
+                    })
                 }));
 
                 d.on_message(Box::new(move |msg: DataChannelMessage| {
                     let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
+
                     println!("Message from data channel '{d_label2}': '{msg_str}'");
 
                     Box::pin(async {
@@ -127,10 +141,6 @@ impl Connection {
             })
         }));
 
-        Ok(Connection { pc, tx, id })
-    }
-
-    pub async fn connect(&self, offer: String) -> Option<String> {
         let session_desc = RTCSessionDescription::offer(offer.clone()).ok()?;
 
         let _ = self.pc.set_remote_description(session_desc).await.ok()?;
@@ -138,6 +148,10 @@ impl Connection {
         let answer = self.pc.create_answer(None).await.ok()?;
 
         let _ = self.pc.set_local_description(answer.clone()).await; // dammit
+        
+        if let Some(dc) = data_rx.recv().await {
+            println!("dc");
+        }
 
         Some(answer.sdp)
     }

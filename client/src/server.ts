@@ -41,6 +41,12 @@ export class ServerConnection {
             this.dataChannel.send("hello there");
         }
 
+        this.dataChannel.onmessage = (msg) => {
+            let data = msg.data;
+
+            console.log(data);
+        }
+
         let sentOffer = false;
         let candidatesToAdd: RTCIceCandidateInit[] = [];
 
@@ -99,6 +105,10 @@ export class ServerConnection {
         } else {
             this.dataChannel.send(message as ArrayBuffer);
         }
+    }
+
+    onMessage(message: ArrayBuffer | String) {
+
     }
 };
 
