@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-
 use tokio::sync::{
-    mpsc::{Sender, self},
+    mpsc::{self, Sender},
     oneshot,
 };
 use webrtc::{
@@ -63,11 +62,13 @@ impl Connection {
                     if let Ok(candidate_json) = candidate.to_json() {
                         let (resp_tx, resp_rx) = oneshot::channel();
 
-                        let _ = tx2.send(ConnectionMessage::AddLocalCandidate {
-                            id,
-                            candidate: candidate_json,
-                            resp: resp_tx,
-                        }).await;
+                        let _ = tx2
+                            .send(ConnectionMessage::AddLocalCandidate {
+                                id,
+                                candidate: candidate_json,
+                                resp: resp_tx,
+                            })
+                            .await;
 
                         let _ = resp_rx.await;
                     }
@@ -98,48 +99,56 @@ impl Connection {
 
             Box::pin(async move {
                 if s == RTCPeerConnectionState::Disconnected {
-                    let _ = tx_close.send(ConnectionMessage::ConnectionClosed { id: id.clone() }).await;
+                    let _ = tx_close
+                        .send(ConnectionMessage::ConnectionClosed { id: id.clone() })
+                        .await;
                 }
             })
         }));
-
 
         Ok(Connection { pc, tx, id })
     }
 
     pub async fn connect(&self, offer: String) -> Option<String> {
-        let (data_tx, mut data_rx) = mpsc::channel::<String>(1);
+        let data_tx = self.tx.clone();
 
-        self.pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
-            let d_label = d.label().to_owned();
-            let d_id = d.id();
-            println!("New data channel {d_label} {d_id}");
+        let id = self.id;
 
-            let data_tx = data_tx.clone();
+        self.pc
+            .on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
+                let d_label = d.label().to_owned();
+                let d_id = d.id();
+                println!("New data channel {d_label} {d_id}");
 
-            Box::pin(async move {
-                let d2 = Arc::clone(&d);
-                let d_label2 = d_label.clone();
+                let data_tx = data_tx.clone();
 
-                d.on_open(Box::new(move || {
-                    println!("Data channel {d_label} {d_id} opened");
+                Box::pin(async move {
+                    let d2 = Arc::clone(&d);
+                    let d_label2 = d_label.clone();
 
-                    Box::pin(async move {
-                        let _ = data_tx.send("HII".to_string()).await;
-                        let _ = d2.send_text("WAAA").await;
-                    })
-                }));
+                    d.on_open(Box::new(move || {
+                        println!("Data channel {d_label} {d_id} opened");
 
-                d.on_message(Box::new(move |msg: DataChannelMessage| {
-                    let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
+                        Box::pin(async move {
+                            let _ = data_tx
+                                .send(ConnectionMessage::DataChannel {
+                                    id, 
+                                    dc: "WAAA".to_string(),
+                                })
+                                .await;
+                            let _ = d2.send_text("WAAA").await;
+                        })
+                    }));
 
-                    println!("Message from data channel '{d_label2}': '{msg_str}'");
+                    d.on_message(Box::new(move |msg: DataChannelMessage| {
+                        let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
 
-                    Box::pin(async {
-                    })
-                }));
-            })
-        }));
+                        println!("Message from data channel '{d_label2}': '{msg_str}'");
+
+                        Box::pin(async {})
+                    }));
+                })
+            }));
 
         let session_desc = RTCSessionDescription::offer(offer.clone()).ok()?;
 
@@ -148,10 +157,6 @@ impl Connection {
         let answer = self.pc.create_answer(None).await.ok()?;
 
         let _ = self.pc.set_local_description(answer.clone()).await; // dammit
-        
-        if let Some(dc) = data_rx.recv().await {
-            println!("dc");
-        }
 
         Some(answer.sdp)
     }

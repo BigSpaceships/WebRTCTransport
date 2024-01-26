@@ -37,6 +37,10 @@ pub enum ConnectionMessage {
         id: u32,
     },
     Cleanup,
+    DataChannel {
+        id: u32,
+        dc: String,
+    },
 }
 
 pub fn get_id() -> u32 {
@@ -95,7 +99,9 @@ pub async fn start_message_manager(mut rx: Receiver<ConnectionMessage>) {
                     continue;
                 }
 
-                let _ = resp.send(Some((answer.unwrap(), connection.id)));
+                let answer_sdp = answer.unwrap();
+
+                let _ = resp.send(Some((answer_sdp, connection.id)));
                 connections.insert(connection.id, connection);
             }
             ConnectionMessage::AddRemoteCandidate {
@@ -148,6 +154,9 @@ pub async fn start_message_manager(mut rx: Receiver<ConnectionMessage>) {
                 }
 
                 connections.clear();
+            }
+            ConnectionMessage::DataChannel { id, dc } => {
+                println!("{dc}");
             }
         }
     }
