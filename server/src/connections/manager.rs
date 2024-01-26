@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
+use bytes::Bytes;
 use rand::Rng;
 use tokio::sync::{
     mpsc::{Receiver, Sender},
@@ -7,12 +8,11 @@ use tokio::sync::{
 };
 use webrtc::{
     api::{media_engine::MediaEngine, APIBuilder},
-    ice_transport::ice_candidate::RTCIceCandidateInit, interceptor::registry::Registry,
+    ice_transport::ice_candidate::RTCIceCandidateInit, interceptor::registry::Registry, data::data_channel::DataChannel, data_channel::RTCDataChannel,
 };
 
 use super::connection::Connection;
 
-#[derive(Debug)]
 pub enum ConnectionMessage {
     NewConnection {
         offer: String,
@@ -39,7 +39,11 @@ pub enum ConnectionMessage {
     Cleanup,
     DataChannel {
         id: u32,
-        dc: String,
+        dc: Arc<RTCDataChannel>,
+    },
+    DataMessage {
+        id: u32,
+        message: Bytes,
     },
 }
 
@@ -156,7 +160,10 @@ pub async fn start_message_manager(mut rx: Receiver<ConnectionMessage>) {
                 connections.clear();
             }
             ConnectionMessage::DataChannel { id, dc } => {
-                println!("{dc}");
+                // data channel
+            }
+            ConnectionMessage::DataMessage { id, message } => {
+                println!("Message from {id}: {:?}", message);
             }
         }
     }

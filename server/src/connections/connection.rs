@@ -114,6 +114,8 @@ impl Connection {
 
         let id = self.id;
 
+        let data_message_tx = self.tx.clone();
+
         self.pc
             .on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
                 let d_label = d.label().to_owned();
@@ -122,30 +124,38 @@ impl Connection {
 
                 let data_tx = data_tx.clone();
 
+                let data_message_tx = data_message_tx.clone();
+
                 Box::pin(async move {
                     let d2 = Arc::clone(&d);
                     let d_label2 = d_label.clone();
 
+                    d.on_message(Box::new(move |msg: DataChannelMessage| {
+                        let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
+                        let data_message_tx = data_message_tx.clone();
+
+                        println!("Message from data channel '{d_label2}': '{msg_str}'");
+
+                        Box::pin(async move {
+                            let _ = data_message_tx
+                                .send(ConnectionMessage::DataMessage {
+                                    id,
+                                    message: msg.data,
+                                })
+                                .await;
+                        })
+                    }));
+
+                    let d_clone = d.clone();
                     d.on_open(Box::new(move || {
                         println!("Data channel {d_label} {d_id} opened");
 
                         Box::pin(async move {
                             let _ = data_tx
-                                .send(ConnectionMessage::DataChannel {
-                                    id, 
-                                    dc: "WAAA".to_string(),
-                                })
+                                .send(ConnectionMessage::DataChannel { id, dc: d_clone })
                                 .await;
                             let _ = d2.send_text("WAAA").await;
                         })
-                    }));
-
-                    d.on_message(Box::new(move |msg: DataChannelMessage| {
-                        let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
-
-                        println!("Message from data channel '{d_label2}': '{msg_str}'");
-
-                        Box::pin(async {})
                     }));
                 })
             }));
